@@ -10410,6 +10410,14 @@ def create_ui():
                         tab_id='generate'
                     )
                     (state, loras_choices, lset_name, resolution, refresh_form_trigger, save_form_trigger) = generator_tab_components['state'], generator_tab_components['loras_choices'], generator_tab_components['lset_name'], generator_tab_components['resolution'], generator_tab_components['refresh_form_trigger'], generator_tab_components['save_form_trigger']
+            with gr.Tab("Outputs", id="outputs") as outputs_tab:
+                gr.Markdown("Browse generated files and download them directly from the UI.")
+                gr.FileExplorer(
+                    value=save_path,
+                    root_dir=save_path,
+                    label="Outputs folder",
+                    height=500,
+                )
             with gr.Tab("Edit", id="edit", visible=False) as edit_tab:
                 edit_title_md = gr.Markdown()
                 edit_tab_components = generate_video_tab(
@@ -10525,4 +10533,4 @@ if __name__ == "__main__":
         else:
             url = "http://" + server_name 
         webbrowser.open(url + ":" + str(server_port), new = 0, autoraise = True)
-    demo.launch(favicon_path="favicon.png", server_name=server_name, server_port=server_port, share=args.share, allowed_paths=list({save_path, image_save_path, "icons"}))
+    demo.launch(favicon_path="favicon.png", server_name=server_name, server_port=server_port, share=args.share, allowed_paths=list({save_path, image_save_path, "icons"}), show_error=True)
