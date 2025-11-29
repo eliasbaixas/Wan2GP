@@ -1,3 +1,4 @@
+import os
 import torch
 import gradio as gr
 from shared.utils import files_locator as fl 
@@ -74,12 +75,25 @@ class family_handler():
         return {"qwen":(40, "Qwen")}
 
     @staticmethod
+    def register_lora_cli_args(parser):
+        parser.add_argument(
+            "--lora-dir-qwen",
+            type=str,
+            default=os.path.join("loras", "qwen"),
+            help="Path to a directory that contains qwen images Loras"
+        )
+
+    @staticmethod
+    def get_lora_dir(base_model_type, args):
+        return args.lora_dir_qwen
+
+    @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
         text_encoder_filename = get_qwen_text_encoder_filename(text_encoder_quantization)    
         download_def = [{  
             "repoId" : "DeepBeepMeep/Qwen_image", 
             "sourceFolderList" :  ["", "Qwen2.5-VL-7B-Instruct"],
-            "fileList" : [ ["qwen_vae.safetensors", "qwen_vae_config.json"], ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json"] + computeList(text_encoder_filename)  ]
+            "fileList" : [ ["qwen_vae.safetensors", "qwen_vae_config.json"], ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json", "chat_template.json"] + computeList(text_encoder_filename)  ]
             }]
 
         download_def  += [{

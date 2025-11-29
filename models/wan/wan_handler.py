@@ -1,3 +1,5 @@
+
+import os
 import torch
 import numpy as np
 import gradio as gr
@@ -75,6 +77,55 @@ class family_handler():
         return {"wan":(0, "Wan2.1"), "wan2_2":(1, "Wan2.2") }
 
     @staticmethod
+    def register_lora_cli_args(parser):
+        parser.add_argument(
+            "--lora-dir-i2v",
+            type=str,
+            default=os.path.join("loras", "wan_i2v"),
+            help="Path to a directory that contains Wan i2v Loras "
+        )
+        parser.add_argument(
+            "--lora-dir",
+            type=str,
+            default=os.path.join("loras", "wan"),
+            help="Path to a directory that contains Wan t2v Loras"
+        )
+        parser.add_argument(
+            "--lora-dir-wan-1-3b",
+            type=str,
+            default=os.path.join("loras", "wan_1.3B"),
+            help="Path to a directory that contains Wan 1.3B Loras"
+        )
+        parser.add_argument(
+            "--lora-dir-wan-5b",
+            type=str,
+            default=os.path.join("loras", "wan_5B"),
+            help="Path to a directory that contains Wan 5B Loras"
+        )
+        parser.add_argument(
+            "--lora-dir-wan-i2v",
+            type=str,
+            default=os.path.join("loras", "wan_i2v"),
+            help="Path to a directory that contains Wan i2v Loras"
+        )
+
+    @staticmethod
+    def get_lora_dir(base_model_type, args):
+        i2v = test_class_i2v(base_model_type) and base_model_type not in ["i2v_2_2", "i2v_2_2_multitalk"]
+        wan_dir = getattr(args, "lora_dir_wan", None) or getattr(args, "lora_dir", None) or os.path.join("loras", "wan")
+        wan_i2v_dir = getattr(args, "lora_dir_wan_i2v", None) or getattr(args, "lora_dir_i2v", None) or os.path.join("loras", "wan_i2v")
+        wan_1_3b_dir = getattr(args, "lora_dir_wan_1_3b", None) or os.path.join("loras", "wan_1.3B")
+        wan_5b_dir = getattr(args, "lora_dir_wan_5b", None) or os.path.join("loras", "wan_5B")
+
+        if i2v:
+            return wan_i2v_dir
+        if "1.3B" in base_model_type:
+            return wan_1_3b_dir
+        if base_model_type in ["ti2v_2_2", "ovi"]:
+            return wan_5b_dir
+        return wan_dir
+
+    @staticmethod
     def set_cache_parameters(cache_type, base_model_type, model_def, inputs, skip_steps_cache):
         i2v =  test_class_i2v(base_model_type)
 
@@ -139,6 +190,8 @@ class family_handler():
         extra_model_def["alpha_class"] = alpha = test_alpha(base_model_type)
         extra_model_def["wan_5B_class"] = wan_5B = test_wan_5B(base_model_type)        
         extra_model_def["vace_class"] = vace_class = test_vace(base_model_type)
+        extra_model_def["color_correction"] = True
+        
         if base_model_type in ["vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B"]:
             extra_model_def["parent_model_type"] = "vace_14B"
 
@@ -204,6 +257,29 @@ class family_handler():
                             ("lcm + ltx", "lcm"), ]
         })
 
+        if i2v:
+            extra_model_def["motion_amplitude"] = True
+ 
+            if base_model_type in ["i2v_2_2"]: 
+                extra_model_def["i2v_v2v"] = True
+                extra_model_def["extract_guide_from_window_start"] = True
+                extra_model_def["guide_custom_choices"] = {
+                    "choices":[("Use Text & Image Prompt Only", ""),
+                            ("Video to Video guided by Text Prompt & Image", "GUV"),
+                            ("Video to Video guided by Text/Image Prompt and Restricted to the Area of the Video Mask", "GVA")],
+                    "default": "",
+                    "show_label" : False,
+                    "letters_filter": "GUVA",
+                    "label": "Video to Video"
+                }
+
+                extra_model_def["mask_preprocessing"] = {
+                    "selection":[ "", "A"],
+                    "visible": False
+                }
+        if base_model_type in ["i2v_2_2", "i2v", "flf2v_720p"]:
+            extra_model_def["black_frame"] = True
+            
 
         if t2v: 
             if not alpha: 
@@ -352,7 +428,18 @@ class family_handler():
                             "default": 0,
                             "label" : "Ditto Process"
                 }
-            
+
+        if base_model_type in ["chrono_edit"]:
+            extra_model_def["model_modes"] = {
+                        "choices": [
+                            ("Fast Image Transformation", 0),
+                            ("Long Image Transformation", 1),
+                            ("Temporal Reasoning Video", 2),],
+                        "default": 0,
+                        "label" : "Chrono Edit Process"
+            }
+            extra_model_def["custom_video_length"] = True
+
 
         if (not vace_class) and standin: 
             extra_model_def["v2i_switch_supported"] = True
@@ -492,10 +579,14 @@ class family_handler():
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
         text_encoder_filename = family_handler.get_wan_text_encoder_filename(text_encoder_quantization)
 
+        if test_wan_5B(base_model_type):
+            wan_files = []
+        else:
+            wan_files = ["Wan2.1_VAE.safetensors",  "fantasy_proj_model.safetensors", "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"]
         download_def  = [{
             "repoId" : "DeepBeepMeep/Wan2.1", 
             "sourceFolderList" :  ["xlm-roberta-large", "umt5-xxl", ""  ],
-            "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] + computeList(text_encoder_filename) , ["Wan2.1_VAE.safetensors",  "fantasy_proj_model.safetensors", "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"] +  computeList(model_filename)  ]   
+            "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] + computeList(text_encoder_filename) , wan_files +  computeList(model_filename)  ]   
         }]
 
         if test_wan_5B(base_model_type):
@@ -716,6 +807,10 @@ class family_handler():
 	            "force_fps": "control",
             })
 
+
+        if base_model_type in ["i2v_2_2"]:
+            ui_defaults.update({"masking_strength": 0.1, "denoising_strength": 0.9})
+            
         if base_model_type in ["chrono_edit"]:
             ui_defaults.update({"image_mode": 1, "prompt_enhancer":"TI"})
 
@@ -741,9 +836,14 @@ class family_handler():
                 inputs["video_prompt_type"] = video_prompt_type 
 
 
-        if base_model_type in ["vace_standin_14B", "vace_lynx_14B"]:
+        elif base_model_type in ["vace_standin_14B", "vace_lynx_14B"]:
             image_refs = inputs["image_refs"]
             video_prompt_type = inputs["video_prompt_type"]
             if image_refs is not None and len(image_refs) == 1 and "K" in video_prompt_type:
                 gr.Info("Warning, Ref Image that contains the Face to transfer is Missing: if 'Landscape and then People or Objects' is selected beside the Landscape Image Ref there should be another Image Ref that contains a Face.")
                     
+
+        elif base_model_type in ["chrono_edit"]:
+            model_mode = inputs["model_mode"]
+            inputs["video_length"] = 5 if model_mode==0 else 29
+            inputs["image_mode"] = 0 if model_mode==2 else 1

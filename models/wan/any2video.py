@@ -6,6 +6,7 @@ import os
 import random
 import sys
 import types
+import math
 from contextlib import contextmanager
 from functools import partial
 from mmgp import offload
@@ -372,6 +373,7 @@ class WanAny2V:
         image_start = None,
         image_end = None,
         denoising_strength = 1.0,
+        masking_strength = 1.0,
         target_camera=None,                  
         context_scale=None,
         width = 1280,
@@ -428,6 +430,7 @@ class WanAny2V:
         original_input_ref_images = [],
         face_arc_embeds = None,
         control_scale_alt = 1.,
+        motion_amplitude = 1.,
         **bbargs
                 ):
         
@@ -526,14 +529,10 @@ class WanAny2V:
         start_step_no = 0
         ref_images_count = 0
         trim_frames = 0
-        last_latent_output = False
+        last_latent_preview = False
         extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = None
         no_noise_latents_injection = infinitetalk
         timestep_injection = False
-
-        if chrono_edit:
-            frame_num = 29
-            last_latent_output = True
 
         lat_frames = int((frame_num - 1) // self.vae_stride[0]) + 1
         extended_input_dim = 0
@@ -555,6 +554,10 @@ class WanAny2V:
                     input_video = image_ref.unsqueeze(1)
                 else:
                     color_correction_strength = 0 #disable color correction as transition frames between shots may have a complete different color level than the colors of the new shot
+            if input_video is None: 
+                input_video = torch.full((3, 1, height, width), -1)
+                color_correction_strength = 0
+                                                                                                  
             _ , preframes_count, height, width = input_video.shape
             input_video = input_video.to(device=self.device).to(dtype= self.VAE_dtype)
             if infinitetalk:
@@ -611,6 +614,20 @@ class WanAny2V:
             msk = msk.transpose(1, 2)[0]
 
             lat_y = self.vae.encode([enc], VAE_tile_size, any_end_frame= any_end_frame and add_frames_for_end_image)[0]
+
+            if motion_amplitude > 1:
+                base_latent = lat_y[:, :1]
+                diff = lat_y[:, control_pre_frames_count:] - base_latent
+                diff_mean = diff.mean(dim=(0, 2, 3), keepdim=True)
+                diff_centered = diff - diff_mean
+                scaled_latent = base_latent + diff_centered * motion_amplitude + diff_mean
+                scaled_latent = torch.clamp(scaled_latent, -6, 6)
+                if any_end_frame:
+                    lat_y = torch.cat([lat_y[:, :control_pre_frames_count], scaled_latent[:, :-1], lat_y[:, -1:]], dim=1)
+                else:
+                    lat_y = torch.cat([lat_y[:, :control_pre_frames_count], scaled_latent], dim=1)
+                base_latent = scaled_latent = diff_mean = diff = diff_centered = None
+                
             y = torch.concat([msk, lat_y])
             overlapped_latents_frames_num = int(1 + (preframes_count-1) // 4)
             # if overlapped_latents != None:
@@ -623,6 +640,14 @@ class WanAny2V:
 
             lat_y = input_video = None
             kwargs.update({ 'y': y})
+
+        # Chrono Edit
+        if chrono_edit:
+            if frame_num == 5:
+                freq0, freq7 = get_nd_rotary_pos_embed( (0, 0, 0), (1, lat_h // 2, lat_w // 2)), get_nd_rotary_pos_embed( (7, 0, 0), (8, lat_h // 2, lat_w // 2))
+                freqs = ( torch.cat([freq0[0], freq7[0]]), torch.cat([freq0[1],freq7[1]]))
+                freq0 = freq7 = None
+            last_latent_preview = image_outputs
 
         # Animate
         if animate:
@@ -723,6 +748,7 @@ class WanAny2V:
                 image_mask_latents = torch.where(image_mask_latents>=0.5, 1., 0. )[:1].to(self.device)
                 # save_video(image_mask_latents.squeeze(0), "mama.mp4", value_range=(0,1) )
                 # image_mask_rebuilt = image_mask_latents.repeat_interleave(8, dim=-1).repeat_interleave(8, dim=-2).unsqueeze(0)
+                masked_steps = math.ceil(sampling_steps * masking_strength)
 
         # Phantom
         if phantom:
@@ -920,7 +946,10 @@ class WanAny2V:
             return None
 
         if sample_scheduler != None:
-            scheduler_kwargs = {} if isinstance(sample_scheduler, FlowMatchScheduler) else {"generator": seed_g}
+            if isinstance(sample_scheduler, FlowMatchScheduler) or sample_solver == 'unipc_hf':
+                scheduler_kwargs = {}
+            else:
+                scheduler_kwargs = {"generator": seed_g}
         # b, c, lat_f, lat_h, lat_w
         latents = torch.randn(batch_size, *target_shape, dtype=torch.float32, device=self.device, generator=seed_g)
         if "G" in video_prompt_type: randn = latents
@@ -932,7 +961,6 @@ class WanAny2V:
         input_frames = input_frames2 = input_masks =input_masks2 = input_video = input_ref_images = input_ref_masks = pre_video_frame = None
         gc.collect()
         torch.cuda.empty_cache()
-
         # denoising
         trans = self.model
         for i, t in enumerate(tqdm(timesteps)):
@@ -1117,17 +1145,17 @@ class WanAny2V:
                     **scheduler_kwargs)[0]
 
 
-            if image_mask_latents is not None:
+            if image_mask_latents is not None and i< masked_steps:
                 sigma = 0 if i == len(timesteps)-1 else timesteps[i+1]/1000
-                noisy_image = randn * sigma + (1 - sigma) * source_latents
-                latents = noisy_image * (1-image_mask_latents) + image_mask_latents * latents  
+                noisy_image = randn[:, :, :source_latents.shape[2]] * sigma + (1 - sigma) * source_latents
+                latents[:, :, :source_latents.shape[2]] = noisy_image * (1-image_mask_latents) + image_mask_latents * latents[:, :, :source_latents.shape[2]]  
 
 
             if callback is not None:
                 latents_preview = latents
                 if ref_images_before and ref_images_count > 0: latents_preview = latents_preview[:, :, ref_images_count: ] 
                 if trim_frames > 0:  latents_preview=  latents_preview[:, :,:-trim_frames]
-                if image_outputs: latents_preview= latents_preview[:, :,-1:] if last_latent_output else latents_preview[:, :,:1]
+                if image_outputs: latents_preview= latents_preview[:, :,-1:] if last_latent_preview else latents_preview[:, :,:1]
                 if len(latents_preview) > 1: latents_preview = latents_preview.transpose(0,2)
                 callback(i, latents_preview[0], False, denoising_extra =denoising_extra )
                 latents_preview = None
@@ -1146,8 +1174,19 @@ class WanAny2V:
         if chipmunk:
             self.model.release_chipmunk() # need to add it at every exit when in prod
 
+        if chrono_edit:
+            if frame_num == 5 :
+                videos = self.vae.decode(x0, VAE_tile_size)
+            else:
+                videos_edit = self.vae.decode([x[:, [0,-1]] for x in x0 ], VAE_tile_size)
+                videos = self.vae.decode([x[:, :-1] for x in x0 ], VAE_tile_size)
+                videos = [ torch.cat([video, video_edit[:, 1:]], dim=1) for video, video_edit in zip(videos, videos_edit)]
+            if image_outputs:
+                return torch.cat([video[:,-1:] for video in videos], dim=1) if len(videos) > 1 else videos[0][:,-1:]
+            else:
+                return videos[0]
         if image_outputs :
-            x0 = [x[:,-1:] if last_latent_output else x[:,:1] for x in x0 ]
+            x0 = [x[:,:1] for x in x0 ]
 
         videos = self.vae.decode(x0, VAE_tile_size)
         any_vae2= self.vae2 is not None
@@ -1168,16 +1207,16 @@ class WanAny2V:
             elif color_reference_frame is not None:
                 videos = match_and_blend_colors(videos.unsqueeze(0), color_reference_frame.unsqueeze(0), color_correction_strength).squeeze(0)
 
-        BGRA_frames = None
+        ret = { "x" : videos, "latent_slice" : latent_slice}
         if alpha_class:
+            BGRA_frames = None
             from .alpha.utils import render_video, from_BRGA_numpy_to_RGBA_torch
             videos, BGRA_frames = render_video(videos[None], videos2[None])            
             if image_outputs: 
                 videos = from_BRGA_numpy_to_RGBA_torch(BGRA_frames) 
                 BGRA_frames = None
-        if return_latent_slice != None or BGRA_frames != None:
-            return { "x" : videos, "latent_slice" : latent_slice, "BGRA_frames" : BGRA_frames }
-        return videos
+            if BGRA_frames is not None: ret["BGRA_frames"] =  BGRA_frames
+        return ret
 
     def get_loras_transformer(self, get_model_recursive_prop, base_model_type, model_type, video_prompt_type, model_mode, **kwargs):
         if base_model_type == "animate":
