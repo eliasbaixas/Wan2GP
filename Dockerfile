@@ -24,6 +24,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install system dependencies
 RUN apt update && \
     apt install -y \
+    openssh-server build-essential aria2 rsync net-tools \
     python3 python3-pip git wget curl cmake ninja-build \
     libgl1 libglib2.0-0 ffmpeg && \
     apt clean
@@ -88,5 +89,9 @@ RUN mkdir /home/user/.cache && \
     chown -R user:user /home/user/.cache
 
 COPY entrypoint.sh /workspace/entrypoint.sh
+COPY pre_init.sh /workspace/pre_init.sh
+
+EXPOSE 7860
+EXPOSE 22
 
 ENTRYPOINT ["/workspace/entrypoint.sh"]

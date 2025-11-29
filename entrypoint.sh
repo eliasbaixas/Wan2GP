@@ -15,6 +15,8 @@ export TORCH_ALLOW_TF32_CUDNN=1
 export SDL_AUDIODRIVER=dummy
 export PULSE_RUNTIME_PATH=/tmp/pulse-runtime
 
+source pre_init.sh
+
 # ═══════════════════════════ CUDA DEBUG CHECKS ═══════════════════════════
 
 echo "🔍 CUDA Environment Debug Information:"
