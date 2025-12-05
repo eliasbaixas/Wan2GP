@@ -91,6 +91,10 @@ RUN mkdir /home/user/.cache && \
 COPY entrypoint.sh /workspace/entrypoint.sh
 COPY pre_init.sh /workspace/pre_init.sh
 
+COPY . .
+RUN pip install --extra-index-url https://download.pytorch.org/whl/cu124 torchaudio==2.6.0+cu124
+RUN chmod -R 777 /workspace
+
 EXPOSE 7860
 EXPOSE 22
 
